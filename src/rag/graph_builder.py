@@ -8,7 +8,6 @@ from langchain_core.prompts import PromptTemplate
 from langgraph.constants import START, END
 from langgraph.graph.state import StateGraph
 
-from src.rag.reAct_agent import agent_executor
 from src.rag.retriever_setup import get_retriever
 from src.config.settings import Config
 from src.llms.openai import llm
@@ -47,7 +46,12 @@ def query_classifier(state: State):
     print("result received is in query classifier")
     print(result.route)
 
-    return {"messages": state["messages"], "route": result.route, "latest_query": question}
+    return {
+        "messages": state["messages"],
+        "route": result.route,
+        "latest_query": question,
+        "rewrite_count": 0,
+    }
 
 
 def general_llm(state: State):
@@ -63,39 +67,25 @@ def general_llm(state: State):
     result = llm.invoke(state["messages"])
     print("inside general llm")
     print(result)
-    return {"messages": result}
+    return {"messages": [result]}
 
 
 def retriever_node(state: State):
     """
-    Retrieve results from vector stores using the reAct agent.
+    Retrieve relevant document chunks from the vector store.
 
     Args:
         state (State): The current state of the graph.
 
     Returns:
-        dict: Updated messages with tool calls.
+        dict: Updated messages with retrieved context.
     """
-    messages = state["latest_query"]
-    result = agent_executor.invoke({"input": messages})
-
-    # Extract tool calls
-    intermediate_steps = result.get("intermediate_steps", [])
-    tool_calls = []
-    if intermediate_steps:
-        for action, tool_result in intermediate_steps:
-            tool_calls.append({
-                "tool": action.tool,
-                "input": action.tool_input,
-            })
-
-    new_message = AIMessage(
-        content=result["output"],
-        additional_kwargs={"tool_calls": tool_calls},
-    )
+    query = state["latest_query"]
+    retriever_tool = get_retriever()
+    context = retriever_tool.invoke(query)
 
     return {
-        "messages": [new_message]
+        "messages": [AIMessage(content=context)]
     }
 
 
@@ -145,7 +135,8 @@ def rewrite_query(state: State):
     print(result)
 
     return {
-        "latest_query": result.content
+        "latest_query": result.content,
+        "rewrite_count": (state.get("rewrite_count") or 0) + 1,
     }
 
 
@@ -169,7 +160,7 @@ def generate(state: State):
     generate_chain = generate_prompt | llm
     result = generate_chain.invoke({"context": context})
 
-    return {"messages": [{"role": "assistant", "content": result.content}]}
+    return {"messages": [AIMessage(content=result.content)]}
 
 
 def web_search(state: State):
@@ -192,7 +183,7 @@ def web_search(state: State):
     print(contents)
 
     return {
-        "messages": [{"role": "assistant", "content": "\n\n".join(contents)}]
+        "messages": [AIMessage(content="\n\n".join(contents))]
     }
 
 
